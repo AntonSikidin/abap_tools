@@ -49,7 +49,7 @@ exclude   TYPE ui_functions,
 lt_data   TYPE REF TO data,
 END OF t_xz_table.
 
-CLASS lcl_tables DEFINITION.
+CLASS lcl_tables DEFINITION FINAL.
 
   PUBLIC SECTION.
 
@@ -60,16 +60,46 @@ CLASS lcl_tables DEFINITION.
 
 ENDCLASS.
 
+CLASS display DEFINITION FINAL.
+  PUBLIC SECTION.
+    TYPES
+    :  t_itext TYPE STANDARD TABLE OF tline-tdline
+    .
+
+
+    CLASS-DATA:
+      read_only TYPE abap_bool READ-ONLY VALUE abap_false.
+
+    CLASS-METHODS:
+
+      fill_abap_editor   IMPORTING editor TYPE REF TO cl_gui_abapedit
+                                   text   TYPE  t_itext,
+      read_abap_editor   IMPORTING editor TYPE REF TO cl_gui_abapedit
+                         EXPORTING text   TYPE t_itext,
+      create_abap_editor
+        IMPORTING parent_container TYPE REF TO cl_gui_container
+        RETURNING VALUE(editor)    TYPE REF TO cl_gui_abapedit.
+
+
+
+ENDCLASS.
+
 CLASS cls_event_handler DEFINITION DEFERRED.
 
-CLASS cls_event_handler DEFINITION.
+CLASS cls_event_handler DEFINITION FINAL.
 
   PUBLIC SECTION.
     METHODS:
 *     Handles method function_selected  for the toolbar control
       on_function_selected FOR EVENT function_selected
                     OF cl_gui_toolbar
-        IMPORTING fcode.
+        IMPORTING fcode,
+
+      on_context_menu FOR EVENT   context_menu OF cl_gui_abapedit
+        IMPORTING menu ,
+      on_context_menu_selected FOR EVENT context_menu_selected OF cl_gui_abapedit
+        IMPORTING fcode
+        .
 
 ENDCLASS.                    "cls_event_handler DEFINITION
 
@@ -86,8 +116,9 @@ DATA
       , dock_sub_toolbar TYPE REF TO cl_gui_container
       , dock_sub_src TYPE REF TO cl_gui_container
       , dock_sub_dst TYPE REF TO cl_gui_container
-      , text_editor_src TYPE REF TO cl_gui_textedit
-      , text_editor_dst TYPE REF TO cl_gui_textedit
+
+      , g_text_editor_src    TYPE REF TO cl_gui_abapedit
+      , g_text_editor_dst    TYPE REF TO cl_gui_abapedit
 
       , go_toolbar              TYPE REF TO cl_gui_toolbar
       , gt_button_group            TYPE ttb_button
@@ -96,6 +127,10 @@ DATA
 
       , go_event_handler        TYPE REF TO cls_event_handler
 
+  , gv_key_1 TYPE string
+  , gv_value_1 TYPE string
+  , gv_value_2 TYPE string
+  , gv_value_3 TYPE string
 
       , lv_item_count TYPE i
       , lv_from  TYPE string
@@ -254,19 +289,34 @@ AT SELECTION-SCREEN OUTPUT.
        column = 2
        RECEIVING container = dock_sub_dst.
 
+    g_text_editor_src  = display=>create_abap_editor( dock_sub_src ).
 
-
-    CREATE OBJECT text_editor_src
+    CALL METHOD g_text_editor_src->register_event_context_menu
       EXPORTING
-        parent = dock_sub_src.
+        register                 = 1
+        appl_event               = 'X'
+        local_entries            = 0
+      EXCEPTIONS
+        error_regist_event       = 1
+        error_unregist_event     = 2
+        cntl_error               = 3
+        event_already_registered = 4
+        event_not_registered     = 5
+        OTHERS                   = 6.
+    IF sy-subrc <> 0.
+      RETURN.
+    ENDIF.
+
+    display=>fill_abap_editor( editor = g_text_editor_src
+                           text   = itext_t[] ).
 
 
-    CREATE OBJECT text_editor_dst
-      EXPORTING
-        parent = dock_sub_dst.
+
+    SET HANDLER go_event_handler->on_context_menu FOR g_text_editor_src.
+    SET HANDLER go_event_handler->on_context_menu_selected FOR g_text_editor_src.
 
 
-
+    g_text_editor_dst  = display=>create_abap_editor( dock_sub_dst ).
 
   ELSE.
     LOOP AT lr_table->lt_table ASSIGNING  FIELD-SYMBOL(<fs_table>) .
@@ -378,6 +428,30 @@ AT SELECTION-SCREEN OUTPUT.
   ENDIF.
 
 
+CLASS display IMPLEMENTATION.
+
+  METHOD create_abap_editor.
+    CREATE OBJECT editor
+      EXPORTING
+        parent = parent_container.
+    editor->set_toolbar_mode( 0 ).
+    editor->set_statusbar_mode( 0 ).
+    IF read_only = abap_true.
+      editor->set_readonly_mode( 1 ).
+    ELSE.
+      editor->set_readonly_mode( 0 ).
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD fill_abap_editor.
+    editor->set_text( text ).
+  ENDMETHOD.
+
+  METHOD read_abap_editor.
+    editor->get_text( IMPORTING table = text ).
+  ENDMETHOD.
+
+ENDCLASS.
 
 
 FORM refresh.
@@ -393,12 +467,8 @@ FORM refresh.
         , lt_tab_dimension TYPE TABLE OF t_pair
         .
 
-  CALL METHOD text_editor_src->get_text_as_r3table
-    IMPORTING
-      table  = itext_t[]
-    EXCEPTIONS
-      OTHERS = 1.
-
+  display=>read_abap_editor( EXPORTING editor = g_text_editor_src
+                             IMPORTING text   = itext_t[] ).
 
   LOOP AT lr_table->lt_table ASSIGNING FIELD-SYMBOL(<fs_table>).
     FREE
@@ -455,26 +525,7 @@ FORM refresh.
     MESSAGE e000(38) WITH 'No closing for' lv_temp_token  lv_token .
   ENDIF.
 
-
-
-
-
   LOOP AT itext_t ASSIGNING <fs_line>.
-
-*    FIND ALL OCCURRENCES OF REGEX '\*(v\d+)=(\d+)' IN <fs_line>  RESULTS result_tab.
-*
-*    LOOP AT result_tab ASSIGNING <fs_result>.
-*
-*      APPEND INITIAL LINE TO lt_tab_dimension ASSIGNING FIELD-SYMBOL(<fs_dimension>).
-*
-*      READ TABLE  <fs_result>-submatches ASSIGNING FIELD-SYMBOL(<fs_submatch>) INDEX 1.
-*      <fs_dimension>-key = <fs_line>+<fs_submatch>-offset(<fs_submatch>-length).
-*
-*      READ TABLE  <fs_result>-submatches ASSIGNING <fs_submatch> INDEX 2.
-*      <fs_dimension>-value = <fs_line>+<fs_submatch>-offset(<fs_submatch>-length).
-*
-*
-*    ENDLOOP.
 
     FIND ALL OCCURRENCES OF REGEX '\$(\d+)-(\d+)' IN <fs_line>  RESULTS result_tab.
 
@@ -506,14 +557,12 @@ FORM refresh.
       EXPORTING
         rows              = 1
         columns           = lr_table->section_count
-*      IMPORTING
-*       result            =
       EXCEPTIONS
         cntl_error        = 1
         cntl_system_error = 2
         OTHERS            = 3.
     IF sy-subrc <> 0.
-*     Implement suitable error handling here
+      RETURN.
     ENDIF.
   ELSE.
     CREATE OBJECT splitter2
@@ -522,10 +571,6 @@ FORM refresh.
         rows    = 1
         columns = lr_table->section_count.
   ENDIF.
-
-
-
-
 
   CALL METHOD splitter2->set_border
     EXPORTING
@@ -555,17 +600,9 @@ FORM refresh.
     EXPORTING
       i_event_id = cl_gui_alv_grid=>mc_evt_enter.
 
-*  CALL METHOD <fs_table>-alv->register_edit_event
-*    EXPORTING
-*      i_event_id = cl_gui_alv_grid=>mc_evt_modified.
-
-
   PERFORM prepare_field_catalog_tabname CHANGING <fs_table>-fieldcat .
   PERFORM prepare_layout_tabname USING 'MAIN' CHANGING <fs_table>-layout .
   PERFORM exclude_tb_functions_tabname CHANGING <fs_table>-exclude.
-
-
-
 
   DATA
         : ifc TYPE lvc_t_fcat
@@ -587,9 +624,6 @@ FORM refresh.
   <fs_ifc>-inttype = 'C'.
   <fs_ifc>-intlen = 30.
 
-
-
-
   CALL METHOD cl_alv_table_create=>create_dynamic_table
     EXPORTING
       it_fieldcatalog           = ifc
@@ -602,9 +636,6 @@ FORM refresh.
     MESSAGE 'Generation Limit Reached' TYPE 'I'.
     RETURN.
   ENDIF.
-
-
-
 
   ASSIGN <fs_table>-lt_data->* TO <it_outtab>.
 
@@ -651,15 +682,9 @@ ENDFORM.
 
 
 FORM do_stuff.
-*  alv_tabname->check_changed_data( ).
-*  alv_lines->check_changed_data( ).
 
-  CALL METHOD text_editor_src->get_text_as_r3table
-    IMPORTING
-      table  = itext_t[]
-    EXCEPTIONS
-      OTHERS = 1.
-
+  display=>read_abap_editor( EXPORTING editor = g_text_editor_src
+                             IMPORTING text   = itext_t[] ).
 
   LOOP AT lr_table->lt_table ASSIGNING FIELD-SYMBOL(<fs_xz_refresh>).
     <fs_xz_refresh>-alv->check_changed_data( ).
@@ -690,8 +715,6 @@ FORM do_stuff.
 
   REFRESH  itext_dest.
 
-
-
   PERFORM recursive_replace
               USING
                  ''
@@ -700,13 +723,8 @@ FORM do_stuff.
               CHANGING
                  itext_dest.
 
-
-
-  CALL METHOD text_editor_dst->set_text_as_r3table
-    EXPORTING
-      table  = itext_dest[]
-    EXCEPTIONS
-      OTHERS = 1.
+  display=>fill_abap_editor( editor = g_text_editor_dst
+                             text   = itext_dest[] ).
 
 ENDFORM.
 
@@ -796,15 +814,9 @@ FORM register_table  USING    lr_table TYPE REF TO lcl_tables
                               splitter TYPE REF TO cl_gui_splitter_container
                               sy_index TYPE syst_index
                               dimension TYPE t_pair .
-
-
-
   DATA
         : lv_ind_plus TYPE syst_index
-
         .
-
-
 
   lv_ind_plus = sy_index + 1.
 
@@ -830,11 +842,6 @@ FORM register_table  USING    lr_table TYPE REF TO lcl_tables
     EXPORTING
       i_event_id = cl_gui_alv_grid=>mc_evt_enter.
 
-*  CALL METHOD <fs_table>-alv->register_edit_event
-*    EXPORTING
-*      i_event_id = cl_gui_alv_grid=>mc_evt_modified.
-
-
   DATA
         : lv_i TYPE i
         .
@@ -850,8 +857,6 @@ FORM register_table  USING    lr_table TYPE REF TO lcl_tables
 
   PERFORM prepare_layout_tabname USING lv_title CHANGING <fs_table>-layout .
   PERFORM exclude_tb_functions_tabname CHANGING <fs_table>-exclude.
-
-
 
   DATA
         : ifc TYPE lvc_t_fcat
@@ -873,9 +878,6 @@ FORM register_table  USING    lr_table TYPE REF TO lcl_tables
     : <fs_any> TYPE STANDARD TABLE
     .
 
-
-
-
   CALL METHOD cl_alv_table_create=>create_dynamic_table
     EXPORTING
       it_fieldcatalog           = ifc
@@ -889,15 +891,9 @@ FORM register_table  USING    lr_table TYPE REF TO lcl_tables
     RETURN.
   ENDIF.
 
-
-
-
-
-
   ASSIGN <fs_table>-lt_data->* TO <fs_any>.
 
   APPEND INITIAL LINE TO <fs_any>.
-
 
   CALL METHOD <fs_table>-alv->set_table_for_first_display
     EXPORTING
@@ -906,8 +902,6 @@ FORM register_table  USING    lr_table TYPE REF TO lcl_tables
     CHANGING
       it_outtab            = <fs_any>
       it_fieldcatalog      = <fs_table>-fieldcat.
-
-
 
 ENDFORM.
 
@@ -1010,6 +1004,9 @@ FORM save .
       EXCEPTIONS
         fieldname_not_found = 1
         OTHERS              = 2.
+    IF sy-subrc NE 0.
+      EXIT.
+    ENDIF.
 
     IF i_answer = 'C'.
       EXIT.
@@ -1056,11 +1053,8 @@ FORM save .
       : itext_t TYPE TABLE OF tline-tdline
       .
 
-  CALL METHOD text_editor_src->get_text_as_r3table
-    IMPORTING
-      table  = itext_t[]
-    EXCEPTIONS
-      OTHERS = 1.
+  display=>read_abap_editor( EXPORTING editor = g_text_editor_src
+                             IMPORTING text   = itext_t[] ).
 
   LOOP AT itext_t ASSIGNING FIELD-SYMBOL(<fs_text>).
     CLEAR wa_zmacros_s.
@@ -1101,15 +1095,12 @@ FORM list  USING p_all TYPE c.
 
 
 
-
-
   PERFORM detect_table.
 
 
   IF p_all IS INITIAL.
 
     SELECT (' BNAME   DDTEXT MAX( VERSION ) AS VERSION    ID')
-     " SELECT (' BNAME   DDTEXT  VERSION    ID')
               FROM ('ZMACROS_H')
               INTO CORRESPONDING FIELDS OF TABLE it_zmacros_h_t
               GROUP BY ('BNAME   DDTEXT   ID')
@@ -1117,7 +1108,6 @@ FORM list  USING p_all TYPE c.
 
   ELSE.
 *>>> all version
-*SELECT (' BNAME   DDTEXT MAX( VERSION ) AS VERSION    ID')
     SELECT (' BNAME   DDTEXT  VERSION    ID')
             FROM ('ZMACROS_H')
             INTO CORRESPONDING FIELDS OF TABLE it_zmacros_h_t
@@ -1125,8 +1115,6 @@ FORM list  USING p_all TYPE c.
             ORDER BY ('ID DESCENDING') .
 *<<< all version
   ENDIF.
-
-
 
   LOOP AT it_zmacros_h_t.
     MOVE-CORRESPONDING it_zmacros_h_t TO wa_zmacros_ddtext.
@@ -1155,8 +1143,6 @@ FORM list  USING p_all TYPE c.
     APPEND LINES OF it_zmacros_h_t TO it_zmacros_h.
 *<< all version
   ENDIF.
-
-
 
   CALL FUNCTION 'F4IF_INT_TABLE_VALUE_REQUEST'
     EXPORTING
@@ -1189,19 +1175,11 @@ FORM list  USING p_all TYPE c.
   REFRESH itext_t.
 
   LOOP AT it_zmacros_s .
-
     APPEND it_zmacros_s-text TO itext_t.
   ENDLOOP.
 
-
-  CALL METHOD text_editor_src->set_text_as_r3table
-    EXPORTING
-      table  = itext_t[]
-    EXCEPTIONS
-      OTHERS = 1.
-
-
-
+  display=>fill_abap_editor( editor = g_text_editor_src
+                             text   = itext_t[] ).
   PERFORM refresh.
 
   MESSAGE 'list' TYPE 'S'.
@@ -1271,21 +1249,8 @@ FORM detect_table.
     APPEND '             TEXT                          TDLINE ' TO itext.
 
 
-    CALL METHOD text_editor_dst->set_text_as_r3table
-      EXPORTING
-        table  = itext
-      EXCEPTIONS
-        OTHERS = 1.
-*    CALL METHOD splitter->set_row_height
-*      EXPORTING
-*        id     = 2
-*        height = '0'.
-*
-*    CALL METHOD splitter->set_row_height
-*      EXPORTING
-*        id     = 4
-*        height = '40'.
-
+    display=>fill_abap_editor( editor = g_text_editor_dst
+                               text   = itext ).
 
     MESSAGE 'Create Z_table.' TYPE 'E'.
 
@@ -1356,6 +1321,7 @@ FORM recursive_replace USING key TYPE string
 
   DATA
         : lv_in_flag TYPE string
+        , lv_tabname_key TYPE tabname
         .
 
   FIELD-SYMBOLS
@@ -1375,7 +1341,8 @@ FORM recursive_replace USING key TYPE string
         IF lv_in_flag(1) = '$'.
           APPEND <fs_src> TO lt_buf.
           lv_key = lv_in_flag+1 .
-          READ TABLE lr_table->lt_table INTO ls_tab WITH KEY tabname = lv_key.
+          lv_tabname_key = lv_key.
+          READ TABLE lr_table->lt_table INTO ls_tab WITH KEY tabname = lv_tabname_key.
           ASSIGN ls_tab-lt_data->* TO <fs_data_table>.
 
           LOOP AT <fs_data_table> ASSIGNING FIELD-SYMBOL(<fs_line>).
@@ -1419,7 +1386,8 @@ FORM recursive_replace USING key TYPE string
 
       REPLACE lv_in_flag IN <fs_src> WITH ''.
       lv_key = lv_in_flag+1 .
-      READ TABLE lr_table->lt_table INTO ls_tab WITH KEY tabname = lv_key.
+      lv_tabname_key = lv_key.
+      READ TABLE lr_table->lt_table INTO ls_tab WITH KEY tabname = lv_tabname_key.
       ASSIGN ls_tab-lt_data->* TO <fs_data_table>.
 
       LOOP AT <fs_data_table> ASSIGNING <fs_line>.
@@ -1496,6 +1464,184 @@ CLASS cls_event_handler IMPLEMENTATION.
       WHEN 'LIST_ALL'.
         PERFORM list USING 'all_query'.
     ENDCASE.
-  ENDMETHOD.                    "on_function_selected
+  ENDMETHOD.
+
+  "on_function_selected
+
+  METHOD on_context_menu.
+    DATA
+          : lt_table TYPE TABLE OF string
+          .
+
+    CALL METHOD g_text_editor_src->get_selected_text_as_table
+      IMPORTING
+        table    = lt_table
+      EXCEPTIONS
+        error_dp = 1
+        OTHERS   = 2.
+    IF sy-subrc <> 0.
+      RETURN.
+    ENDIF.
+
+    CHECK  lines( lt_table ) EQ 1.
+    READ TABLE lt_table INDEX 1 ASSIGNING FIELD-SYMBOL(<fs_line>).
+
+    CALL METHOD menu->add_function
+      EXPORTING
+        fcode = 'REPLACE1'
+        text  = |\{{ <fs_line> }\}|.
+
+    gv_key_1 = <fs_line>.
+    gv_value_1 = |\{{ <fs_line> }\}|.
+
+
+    DATA
+          : lv_from_line TYPE i
+          , itext_t TYPE TABLE OF tline-tdline
+          , result_tab TYPE match_result_tab
+          , lt_tab_dimension TYPE TABLE OF t_pair
+          .
+
+
+    CALL METHOD g_text_editor_src->get_selection_pos
+      IMPORTING
+        from_line              = lv_from_line
+      EXCEPTIONS
+        error_cntl_call_method = 1
+        OTHERS                 = 2.
+    IF sy-subrc <> 0.
+      RETURN.
+    ENDIF.
+
+    display=>read_abap_editor( EXPORTING editor = g_text_editor_src
+                               IMPORTING text   = itext_t ).
+
+    READ TABLE itext_t INDEX lv_from_line ASSIGNING FIELD-SYMBOL(<fs_line_text>).
+
+    FIND ALL OCCURRENCES OF REGEX '\$(\d+)-(\d+)' IN <fs_line_text>  RESULTS result_tab.
+
+    LOOP AT result_tab ASSIGNING FIELD-SYMBOL(<fs_result>).
+
+      APPEND INITIAL LINE TO lt_tab_dimension ASSIGNING FIELD-SYMBOL(<fs_dimension>).
+
+      READ TABLE  <fs_result>-submatches ASSIGNING FIELD-SYMBOL(<fs_submatch>) INDEX 1.
+      <fs_dimension>-key = <fs_line_text>+<fs_submatch>-offset(<fs_submatch>-length).
+
+      READ TABLE  <fs_result>-submatches ASSIGNING <fs_submatch> INDEX 2.
+      <fs_dimension>-value = <fs_line_text>+<fs_submatch>-offset(<fs_submatch>-length).
+
+
+    ENDLOOP.
+
+    SORT lt_tab_dimension BY key DESCENDING value DESCENDING.
+
+
+    DATA
+          : lv_i TYPE i
+          .
+
+    READ TABLE lt_tab_dimension ASSIGNING <fs_dimension> INDEX '1'.
+
+    IF sy-subrc = 0.
+      lv_i = <fs_dimension>-value.
+      ADD  1 TO lv_i.
+
+      CALL METHOD menu->add_function
+        EXPORTING
+          fcode = 'REPLACE2'
+          text  = |${ <fs_dimension>-key }-{ lv_i }|.
+      gv_value_2 = |${ <fs_dimension>-key }-{ lv_i }|.
+
+
+
+    ENDIF.
+
+
+    LOOP AT itext_t  ASSIGNING <fs_line_text>.
+
+
+
+
+      FIND ALL OCCURRENCES OF REGEX '\$(\d+)-(\d+)' IN <fs_line_text>  RESULTS result_tab.
+
+      LOOP AT result_tab ASSIGNING <fs_result>.
+
+        APPEND INITIAL LINE TO lt_tab_dimension ASSIGNING <fs_dimension>.
+
+        READ TABLE  <fs_result>-submatches ASSIGNING <fs_submatch> INDEX 1.
+        <fs_dimension>-key = <fs_line_text>+<fs_submatch>-offset(<fs_submatch>-length).
+
+        READ TABLE  <fs_result>-submatches ASSIGNING <fs_submatch> INDEX 2.
+        <fs_dimension>-value = <fs_line_text>+<fs_submatch>-offset(<fs_submatch>-length).
+
+
+      ENDLOOP.
+
+    ENDLOOP.
+
+    SORT lt_tab_dimension BY key DESCENDING value DESCENDING.
+
+
+
+    READ TABLE lt_tab_dimension ASSIGNING <fs_dimension> INDEX '1'.
+
+    IF sy-subrc = 0.
+
+      lv_i = <fs_dimension>-key.
+      ADD  1 TO lv_i.
+
+      CALL METHOD menu->add_function
+        EXPORTING
+          fcode = 'REPLACE3'
+          text  = |${ lv_i }-1|.
+      gv_value_3 = |${ lv_i }-1|.
+
+
+    ELSE.
+
+      CALL METHOD menu->add_function
+        EXPORTING
+          fcode = 'REPLACE3'
+          text  = |$1-1|.
+
+      gv_value_3   = |$1-1|.
+
+    ENDIF.
+
+  ENDMETHOD.
+
+
+  METHOD on_context_menu_selected.
+    DATA
+
+    : itext_t TYPE TABLE OF tline-tdline
+    .
+
+    display=>read_abap_editor( EXPORTING editor = g_text_editor_src
+                               IMPORTING text   = itext_t ).
+
+    FIELD-SYMBOLS
+      : <fs_str> TYPE string
+      .
+
+    CASE fcode.
+      WHEN 'REPLACE1'.
+        ASSIGN gv_value_1 TO <fs_str>.
+      WHEN 'REPLACE2'.
+        ASSIGN gv_value_2 TO <fs_str>.
+      WHEN 'REPLACE3'.
+        ASSIGN gv_value_3 TO <fs_str>.
+    ENDCASE.
+
+
+    LOOP AT itext_t ASSIGNING FIELD-SYMBOL(<fs_line>).
+      REPLACE ALL OCCURRENCES OF gv_key_1 IN <fs_line> WITH <fs_str>.
+    ENDLOOP.
+
+
+    display=>fill_abap_editor( editor = g_text_editor_src
+                           text   = itext_t[] ).
+
+  ENDMETHOD.
 
 ENDCLASS.                    "cls_event_handler IMPLEMENTATION
